@@ -13,6 +13,22 @@ const pdfParse = require("pdf-parse-v1") as (
 ) => Promise<{ numpages: number; info: Record<string, unknown> }>;
 
 // ---------------------------------------------------------------------------
+// Normalize trailing-minus sign: "1234-" → "-1234", "123.45-" → "-123.45"
+// Returns a negative number if the pattern matches, otherwise the raw string.
+// ---------------------------------------------------------------------------
+function normalizeSign(raw: string): string | number {
+  const trimmed = raw.trim();
+  // Match digits (with optional thousand-separators/decimal) followed by "-"
+  const m = trimmed.match(/^([\d,]+(\.\d+)?)-$/);
+  if (m) {
+    const numStr = m[1].replace(/,/g, "");
+    const n = parseFloat(numStr);
+    if (!isNaN(n)) return -n;
+  }
+  return raw;
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 interface PositionedItem {
@@ -206,7 +222,7 @@ function writeTableBlock(
     });
     cells.forEach((val, idx) => {
       const cell = excelRow.getCell(idx + 1);
-      cell.value = val;
+      cell.value = normalizeSign(val) as ExcelJS.CellValue;
       cell.border = {
         top: { style: "thin", color: { argb: "FFCCCCCC" } },
         left: { style: "thin", color: { argb: "FFCCCCCC" } },
@@ -253,7 +269,8 @@ function writeTextBlock(
     const minX = Math.min(...pageXs);
     const colIdx = firstX - minX > 30 ? 2 : 1;
     const cell = excelRow.getCell(colIdx);
-    cell.value = row.items.map((i) => i.text).join(" ");
+    const joined = row.items.map((i) => i.text).join(" ");
+    cell.value = normalizeSign(joined) as ExcelJS.CellValue;
     excelRow.commit();
     cur++;
   });
