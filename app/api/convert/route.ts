@@ -13,19 +13,56 @@ const pdfParse = require("pdf-parse-v1") as (
 ) => Promise<{ numpages: number; info: Record<string, unknown> }>;
 
 // ---------------------------------------------------------------------------
-// Normalize trailing-minus sign: "1234-" → "-1234", "123.45-" → "-123.45"
+// Normalize trailing-minus sign:
+//   "1234-"    → -1234
+//   "123.45-"  → -123.45
+//   "1,234 -"  → -1234   (space before minus is also accepted)
 // Returns a negative number if the pattern matches, otherwise the raw string.
 // ---------------------------------------------------------------------------
 function normalizeSign(raw: string): string | number {
   const trimmed = raw.trim();
-  // Match digits (with optional thousand-separators/decimal) followed by "-"
-  const m = trimmed.match(/^([\d,]+(\.\d+)?)-$/);
+  // \s* allows an optional space between the number and the trailing "-"
+  const m = trimmed.match(/^([\d,]+(\.\d+)?)\s*-$/);
   if (m) {
     const numStr = m[1].replace(/,/g, "");
     const n = parseFloat(numStr);
     if (!isNaN(n)) return -n;
   }
   return raw;
+}
+
+// ---------------------------------------------------------------------------
+// Merge a standalone "−" item that immediately follows a pure-number item
+// in the same row.
+//
+// Background: some PDFs encode negative values as two separate text items,
+// e.g. "345.44" and "−" placed side by side. Our column-bucket algorithm
+// puts them in different cells, losing the sign.  By merging them at the
+// item level we ensure "345.44-" is then converted to -345.44 by
+// normalizeSign().
+// ---------------------------------------------------------------------------
+function mergeTrailingMinuses(items: PositionedItem[]): PositionedItem[] {
+  if (items.length < 2) return items;
+  const result: PositionedItem[] = [];
+
+  for (const item of items) {
+    const isMinusToken =
+      item.text.trim() === "-" || item.text.trim() === "−"; // hyphen-minus or en-dash
+    const prevIsNumber =
+      result.length > 0 &&
+      /^[\d,]+(\.\d+)?$/.test(result[result.length - 1].text.trim());
+
+    if (isMinusToken && prevIsNumber) {
+      // Attach "-" to the preceding number item
+      result[result.length - 1] = {
+        ...result[result.length - 1],
+        text: result[result.length - 1].text.trim() + "-",
+      };
+    } else {
+      result.push(item);
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,13 +128,13 @@ function groupIntoRows(items: PositionedItem[], tolerance = 3): TextRow[] {
     if (Math.abs(it.y - currentY) <= tolerance) {
       current.push(it);
     } else {
-      rows.push({ items: current.sort((a, b) => a.x - b.x), y: currentY });
+      rows.push({ items: mergeTrailingMinuses(current.sort((a, b) => a.x - b.x)), y: currentY });
       current = [it];
       currentY = it.y;
     }
   }
   if (current.length > 0) {
-    rows.push({ items: current.sort((a, b) => a.x - b.x), y: currentY });
+    rows.push({ items: mergeTrailingMinuses(current.sort((a, b) => a.x - b.x)), y: currentY });
   }
   return rows;
 }
